@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Last.fm → Spotify</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111111;
+      --border: #1e1e1e;
+      --text: #e8e8e8;
+      --muted: #555;
+      --lastfm: #d51007;
+      --spotify: #1db954;
+      --accent: #f0e040;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 56px;
+    }
+    .logo {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(48px, 10vw, 80px);
+      line-height: 0.9;
+      letter-spacing: -1px;
+    }
+    .logo span.lf { color: var(--lastfm); }
+    .logo span.arr { color: var(--muted); font-size: 0.6em; }
+    .logo span.sp { color: var(--spotify); }
+    .tagline {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    /* Setup panel */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 28px;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .panel::before {
+      content: attr(data-label);
+      position: absolute;
+      top: -10px;
+      left: 16px;
+      background: var(--bg);
+      padding: 0 8px;
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 18px;
+    }
+    .field:last-child { margin-bottom: 0; }
+    label {
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    input, select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      font-size: 13px;
+      padding: 10px 14px;
+      width: 100%;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+    input::placeholder { color: var(--muted); }
+    select option { background: #111; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+
+    /* Range slider */
+    .slider-wrap {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    input[type=range] {
+      flex: 1;
+      padding: 0;
+      height: 2px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      border: none;
+    }
+    .slider-val {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 28px;
+      color: var(--accent);
+      width: 48px;
+      text-align: right;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      border: none;
+      cursor: pointer;
+      transition: opacity .2s, transform .1s;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn:disabled { opacity: .35; cursor: not-allowed; }
+    .btn-spotify {
+      background: var(--spotify);
+      color: #000;
+      font-weight: 500;
+    }
+    .btn-lastfm {
+      background: var(--lastfm);
+      color: #fff;
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn:not(:disabled):hover { opacity: .85; }
+
+    /* Auth status */
+    .auth-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .status-ok { background: var(--spotify); }
+    .status-no { background: var(--muted); }
+    .status-text { font-size: 11px; color: var(--muted); }
+
+    /* Action bar */
+    .action-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 28px;
+      flex-wrap: wrap;
+    }
+
+    /* Progress / Log */
+    .log-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 20px;
+      margin-top: 24px;
+      font-size: 12px;
+      line-height: 1.8;
+      max-height: 340px;
+      overflow-y: auto;
+      display: none;
+    }
+    .log-box.visible { display: block; }
+    .log-line { display: flex; gap: 12px; }
+    .log-time { color: var(--muted); flex-shrink: 0; }
+    .log-ok { color: var(--spotify); }
+    .log-err { color: var(--lastfm); }
+    .log-info { color: var(--accent); }
+    .log-muted { color: var(--muted); }
+
+    /* Progress bar */
+    .progress-wrap {
+      display: none;
+      margin-top: 16px;
+      height: 2px;
+      background: var(--border);
+    }
+    .progress-wrap.visible { display: block; }
+    .progress-bar {
+      height: 100%;
+      background: var(--spotify);
+      width: 0%;
+      transition: width .3s;
+    }
+
+    /* Track list preview */
+    .track-list {
+      margin-top: 20px;
+      display: none;
+    }
+    .track-list.visible { display: block; }
+    .track-item {
+      display: grid;
+      grid-template-columns: 32px 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .track-item:last-child { border-bottom: none; }
+    .track-num { color: var(--muted); text-align: right; font-size: 11px; }
+    .track-name { font-size: 13px; }
+    .track-artist { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .track-plays { color: var(--accent); font-size: 11px; white-space: nowrap; }
+    .track-found { color: var(--spotify); font-size: 10px; }
+    .track-notfound { color: var(--lastfm); font-size: 10px; }
+
+    .section-title {
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* Success banner */
+    .success-banner {
+      background: rgba(29,185,84,.08);
+      border: 1px solid rgba(29,185,84,.3);
+      padding: 20px 24px;
+      margin-top: 20px;
+      display: none;
+      align-items: center;
+      gap: 16px;
+    }
+    .success-banner.visible { display: flex; }
+    .success-banner a {
+      color: var(--spotify);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.2);
+      border-top-color: currentColor;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      display: none;
+    }
+    .spinning { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); }
+
+    /* fade in */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .panel, header { animation: fadeUp .5s ease both; }
+    .panel:nth-child(2) { animation-delay: .05s; }
+    .panel:nth-child(3) { animation-delay: .1s; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div>
+      <div class="logo">
+        <span class="lf">Last</span><span class="arr">→</span><span class="sp">Spot</span>
+      </div>
+    </div>
+    <div>
+      <div class="tagline">Top Charts · Playlist Transfer</div>
+    </div>
+  </header>
+
+  <!-- SETUP -->
+  <div class="panel" data-label="01 · API Keys">
+    <div class="row">
+      <div class="field">
+        <label>Last.fm API Key</label>
+        <input type="password" id="lfKey" placeholder="xxxxxxxxxxxxxxxx" autocomplete="off"/>
+      </div>
+      <div class="field">
+        <label>Last.fm Nutzername</label>
+        <input type="text" id="lfUser" placeholder="dein_username"/>
+      </div>
+    </div>
+    <div class="field" style="margin-top:4px">
+      <label>Spotify Client ID</label>
+      <input type="text" id="spClientId" placeholder="Spotify App Client ID"/>
+    </div>
+    <div class="field">
+      <label>Redirect URI (muss in Spotify App hinterlegt sein)</label>
+      <input type="text" id="spRedirect" placeholder="https://USERNAME.github.io/lastfm-to-spotify/"/>
+    </div>
+    <div style="font-size:10px; color:var(--muted); margin-top:8px; line-height:1.7">
+      Keys werden nur lokal im Browser gespeichert (localStorage). Kein Server involviert.
+    </div>
+  </div>
+
+  <!-- SPOTIFY AUTH -->
+  <div class="panel" data-label="02 · Spotify Verbindung">
+    <div class="auth-row">
+      <div>
+        <span class="status-dot" id="spDot" style="background:var(--muted)"></span>
+        <span class="status-text" id="spStatus">Nicht verbunden</span>
+      </div>
+      <button class="btn btn-spotify" id="btnAuth" onclick="spotifyAuth()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+        Spotify verbinden
+      </button>
+    </div>
+    <div id="spUserInfo" style="margin-top:12px; font-size:11px; color:var(--muted); display:none"></div>
+  </div>
+
+  <!-- QUERY SETTINGS -->
+  <div class="panel" data-label="03 · Einstellungen">
+    <div class="row">
+      <div class="field">
+        <label>Zeitraum</label>
+        <select id="period">
+          <option value="7day">Letzte 7 Tage</option>
+          <option value="1month">Letzter Monat</option>
+          <option value="3month">Letzte 3 Monate</option>
+          <option value="6month">Letzte 6 Monate</option>
+          <option value="12month" selected>Letztes Jahr</option>
+          <option value="overall">Alle Zeit</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Playlist Name</label>
+        <input type="text" id="plName" value="Last.fm Top Tracks"/>
+      </div>
+    </div>
+    <div class="field">
+      <label>Anzahl Songs: <span id="topNLabel">25</span></label>
+      <div class="slider-wrap">
+        <input type="range" id="topN" min="5" max="100" value="25" step="5"
+          oninput="document.getElementById('topNLabel').textContent=this.value; document.getElementById('sliderVal').textContent=this.value"/>
+        <div class="slider-val" id="sliderVal">25</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Playlist Verhalten</label>
+      <select id="plMode">
+        <option value="new">Neue Playlist erstellen</option>
+        <option value="replace">Bestehende Playlist ersetzen (gleicher Name)</option>
+        <option value="append">Zu bestehender Playlist hinzufügen</option>
+      </select>
+    </div>
+
+    <div class="action-bar">
+      <button class="btn btn-lastfm" id="btnFetch" onclick="fetchLastFm()" disabled>
+        <span class="spinner" id="spinFetch"></span>
+        Last.fm abrufen
+      </button>
+      <button class="btn btn-spotify" id="btnTransfer" onclick="transferToSpotify()" disabled>
+        <span class="spinner" id="spinTransfer"></span>
+        In Spotify übertragen
+      </button>
+      <button class="btn btn-ghost" onclick="clearAll()" style="margin-left:auto">Reset</button>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+
+  <!-- Success -->
+  <div class="success-banner" id="successBanner">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--spotify)"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+    <div>
+      <div style="font-size:13px; margin-bottom:4px">Playlist erstellt!</div>
+      <a id="plLink" href="#" target="_blank">In Spotify öffnen →</a>
+    </div>
+  </div>
+
+  <!-- Track Preview -->
+  <div class="track-list" id="trackList">
+    <div class="section-title" id="trackListTitle">Gefundene Tracks</div>
+    <div id="trackItems"></div>
+  </div>
+
+  <!-- Log -->
+  <div class="log-box" id="logBox"></div>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let spToken = null;
+let spTokenExpiry = 0;
+let spUserId = null;
+let fetchedTracks = []; // [{name, artist, playcount, spotifyUri, found}]
+
+// ─────────────────────────────────────────────
+// Persist settings
+// ─────────────────────────────────────────────
+const FIELDS = ['lfKey','lfUser','spClientId','spRedirect','plName'];
+window.addEventListener('load', () => {
+  FIELDS.forEach(id => {
+    const el = document.getElementById(id);
+    const val = localStorage.getItem('lfs_' + id);
+    if (val) el.value = val;
+    el.addEventListener('input', () => localStorage.setItem('lfs_' + id, el.value));
+  });
+
+  // Check Spotify token from URL hash (after OAuth redirect)
+  const hash = window.location.hash.substring(1);
+  if (hash) {
+    const params = new URLSearchParams(hash);
+    const token = params.get('access_token');
+    const expiresIn = params.get('expires_in');
+    if (token) {
+      spToken = token;
+      spTokenExpiry = Date.now() + (parseInt(expiresIn) * 1000);
+      localStorage.setItem('lfs_spToken', token);
+      localStorage.setItem('lfs_spTokenExpiry', spTokenExpiry);
+      history.replaceState(null, null, window.location.pathname);
+      fetchSpotifyUser();
+    }
+  } else {
+    const savedToken = localStorage.getItem('lfs_spToken');
+    const savedExpiry = localStorage.getItem('lfs_spTokenExpiry');
+    if (savedToken && Date.now() < parseInt(savedExpiry)) {
+      spToken = savedToken;
+      spTokenExpiry = parseInt(savedExpiry);
+      fetchSpotifyUser();
+    }
+  }
+
+  updateFetchBtn();
+  document.getElementById('lfKey').addEventListener('input', updateFetchBtn);
+  document.getElementById('lfUser').addEventListener('input', updateFetchBtn);
+});
+
+function updateFetchBtn() {
+  const ok = document.getElementById('lfKey').value.trim() &&
+             document.getElementById('lfUser').value.trim();
+  document.getElementById('btnFetch').disabled = !ok;
+}
+
+// ─────────────────────────────────────────────
+// Logging
+// ─────────────────────────────────────────────
+function log(msg, type = 'info') {
+  const box = document.getElementById('logBox');
+  box.classList.add('visible');
+  const time = new Date().toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${time}</span><span class="log-${type}">${msg}</span>`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ─────────────────────────────────────────────
+// Spotify OAuth (PKCE-less Implicit Flow – simple for GitHub Pages)
+// ─────────────────────────────────────────────
+function spotifyAuth() {
+  const clientId = document.getElementById('spClientId').value.trim();
+  const redirect = document.getElementById('spRedirect').value.trim();
+  if (!clientId || !redirect) {
+    alert('Bitte Spotify Client ID und Redirect URI eingeben.');
+    return;
+  }
+  localStorage.setItem('lfs_spClientId', clientId);
+  localStorage.setItem('lfs_spRedirect', redirect);
+
+  const scopes = 'playlist-modify-public playlist-modify-private playlist-read-private';
+  const url = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent(scopes)}`;
+  window.location.href = url;
+}
+
+async function fetchSpotifyUser() {
+  try {
+    const res = await fetch('https://api.spotify.com/v1/me', {
+      headers: { Authorization: 'Bearer ' + spToken }
+    });
+    if (!res.ok) throw new Error('Token ungültig');
+    const data = await res.json();
+    spUserId = data.id;
+
+    document.getElementById('spDot').style.background = 'var(--spotify)';
+    document.getElementById('spStatus').textContent = 'Verbunden';
+    const info = document.getElementById('spUserInfo');
+    info.style.display = 'block';
+    info.textContent = `Eingeloggt als: ${data.display_name || data.id} · ${data.product === 'premium' ? 'Premium' : 'Free'}`;
+    document.getElementById('btnAuth').textContent = '✓ Neu verbinden';
+    updateTransferBtn();
+    log(`Spotify: Eingeloggt als ${data.display_name || data.id}`, 'ok');
+  } catch(e) {
+    spToken = null;
+    localStorage.removeItem('lfs_spToken');
+    log('Spotify Auth fehlgeschlagen: ' + e.message, 'err');
+  }
+}
+
+function updateTransferBtn() {
+  document.getElementById('btnTransfer').disabled = !(spToken && fetchedTracks.length > 0);
+}
+
+// ─────────────────────────────────────────────
+// Last.fm fetch
+// ─────────────────────────────────────────────
+async function fetchLastFm() {
+  const apiKey = document.getElementById('lfKey').value.trim();
+  const user   = document.getElementById('lfUser').value.trim();
+  const period = document.getElementById('period').value;
+  const limit  = document.getElementById('topN').value;
+
+  if (!apiKey || !user) { alert('Last.fm API Key und Nutzername benötigt.'); return; }
+
+  setSpinner('spinFetch', true);
+  document.getElementById('btnFetch').disabled = true;
+  document.getElementById('trackList').classList.remove('visible');
+  document.getElementById('successBanner').classList.remove('visible');
+  fetchedTracks = [];
+  log(`Last.fm: Lade Top ${limit} Tracks für "${user}" (${period})…`, 'info');
+
+  try {
+    const url = `https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${encodeURIComponent(user)}&period=${period}&limit=${limit}&api_key=${apiKey}&format=json`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.error) throw new Error(data.message);
+    const tracks = data.toptracks?.track || [];
+    if (!tracks.length) throw new Error('Keine Tracks gefunden.');
+
+    log(`Last.fm: ${tracks.length} Tracks geladen.`, 'ok');
+
+    fetchedTracks = tracks.map(t => ({
+      name: t.name,
+      artist: t.artist.name,
+      playcount: t.playcount,
+      spotifyUri: null,
+      found: null
+    }));
+
+    renderTrackList(false);
+    updateTransferBtn();
+  } catch(e) {
+    log('Last.fm Fehler: ' + e.message, 'err');
+  } finally {
+    setSpinner('spinFetch', false);
+    document.getElementById('btnFetch').disabled = false;
+  }
+}
+
+function renderTrackList(withSpotify) {
+  const container = document.getElementById('trackItems');
+  container.innerHTML = '';
+  document.getElementById('trackListTitle').textContent =
+    withSpotify ? `Tracks (${fetchedTracks.filter(t=>t.found).length}/${fetchedTracks.length} auf Spotify gefunden)` : `${fetchedTracks.length} Tracks von Last.fm`;
+
+  fetchedTracks.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.className = 'track-item';
+    let statusHtml = '';
+    if (withSpotify) {
+      statusHtml = t.found
+        ? `<span class="track-found">✓ gefunden</span>`
+        : `<span class="track-notfound">✗ nicht gefunden</span>`;
+    } else {
+      statusHtml = `<span style="color:var(--muted);font-size:11px">${parseInt(t.playcount).toLocaleString('de')} plays</span>`;
+    }
+    div.innerHTML = `
+      <span class="track-num">${i+1}</span>
+      <div>
+        <div class="track-name">${escHtml(t.name)}</div>
+        <div class="track-artist">${escHtml(t.artist)}</div>
+      </div>
+      ${statusHtml}
+    `;
+    container.appendChild(div);
+  });
+
+  document.getElementById('trackList').classList.add('visible');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────
+// Spotify Transfer
+// ─────────────────────────────────────────────
+async function transferToSpotify() {
+  if (!spToken || !fetchedTracks.length) return;
+
+  setSpinner('spinTransfer', true);
+  document.getElementById('btnTransfer').disabled = true;
+  document.getElementById('successBanner').classList.remove('visible');
+  setProgress(0);
+
+  log('Spotify: Suche Tracks…', 'info');
+
+  // 1. Search each track
+  const total = fetchedTracks.length;
+  for (let i = 0; i < total; i++) {
+    const t = fetchedTracks[i];
+    const q = encodeURIComponent(`track:${t.name} artist:${t.artist}`);
+    try {
+      const res = await fetch(`https://api.spotify.com/v1/search?q=${q}&type=track&limit=1`, {
+        headers: { Authorization: 'Bearer ' + spToken }
+      });
+      const data = await res.json();
+      const item = data.tracks?.items?.[0];
+      if (item) {
+        t.spotifyUri = item.uri;
+        t.found = true;
+      } else {
+        t.found = false;
+        log(`Nicht gefunden: ${t.artist} – ${t.name}`, 'muted');
+      }
+    } catch(e) {
+      t.found = false;
+    }
+    setProgress(Math.round(((i+1) / total) * 60));
+    await sleep(100); // rate limit protection
+  }
+
+  renderTrackList(true);
+  const uris = fetchedTracks.filter(t => t.found).map(t => t.spotifyUri);
+  log(`Spotify: ${uris.length}/${total} Tracks gefunden.`, 'ok');
+
+  if (!uris.length) {
+    log('Keine Tracks gefunden – Playlist nicht erstellt.', 'err');
+    setSpinner('spinTransfer', false);
+    document.getElementById('btnTransfer').disabled = false;
+    return;
+  }
+
+  // 2. Create / find playlist
+  setProgress(65);
+  const plName = document.getElementById('plName').value.trim() || 'Last.fm Top Tracks';
+  const mode   = document.getElementById('plMode').value;
+  let plId = null;
+
+  if (mode === 'replace' || mode === 'append') {
+    log('Spotify: Suche bestehende Playlist…', 'info');
+    plId = await findPlaylist(plName);
+    if (!plId) {
+      log('Playlist nicht gefunden – erstelle neue.', 'muted');
+      plId = await createPlaylist(plName);
+    } else {
+      if (mode === 'replace') {
+        log('Spotify: Leere bestehende Playlist…', 'info');
+        await clearPlaylist(plId);
+      }
+    }
+  } else {
+    log('Spotify: Erstelle neue Playlist…', 'info');
+    plId = await createPlaylist(plName);
+  }
+
+  if (!plId) {
+    log('Fehler: Playlist konnte nicht erstellt werden.', 'err');
+    setSpinner('spinTransfer', false);
+    document.getElementById('btnTransfer').disabled = false;
+    return;
+  }
+
+  setProgress(75);
+
+  // 3. Add tracks in chunks of 100
+  const chunks = [];
+  for (let i = 0; i < uris.length; i += 100) chunks.push(uris.slice(i, i+100));
+  for (let ci = 0; ci < chunks.length; ci++) {
+    await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + spToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ uris: chunks[ci] })
+    });
+    setProgress(75 + Math.round(((ci+1)/chunks.length)*25));
+    await sleep(200);
+  }
+
+  setProgress(100);
+  log(`✓ Playlist "${plName}" mit ${uris.length} Tracks erstellt!`, 'ok');
+
+  const plUrl = `https://open.spotify.com/playlist/${plId}`;
+  document.getElementById('plLink').href = plUrl;
+  document.getElementById('successBanner').classList.add('visible');
+
+  setSpinner('spinTransfer', false);
+  document.getElementById('btnTransfer').disabled = false;
+}
+
+async function findPlaylist(name) {
+  try {
+    let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+    while (url) {
+      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + spToken } });
+      const data = await res.json();
+      const found = data.items?.find(p => p.name === name && p.owner.id === spUserId);
+      if (found) return found.id;
+      url = data.next || null;
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function createPlaylist(name) {
+  try {
+    const period = document.getElementById('period');
+    const periodText = period.options[period.selectedIndex].text;
+    const res = await fetch(`https://api.spotify.com/v1/users/${spUserId}/playlists`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + spToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name,
+        public: false,
+        description: `Top ${document.getElementById('topN').value} Tracks · ${periodText} · via Last.fm→Spot`
+      })
+    });
+    const data = await res.json();
+    return data.id || null;
+  } catch(e) { return null; }
+}
+
+async function clearPlaylist(plId) {
+  await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
+    method: 'PUT',
+    headers: {
+      Authorization: 'Bearer ' + spToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ uris: [] })
+  });
+}
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function setSpinner(id, on) {
+  document.getElementById(id).className = on ? 'spinner spinning' : 'spinner';
+}
+
+function setProgress(pct) {
+  const wrap = document.getElementById('progressWrap');
+  const bar  = document.getElementById('progressBar');
+  wrap.classList.add('visible');
+  bar.style.width = pct + '%';
+  if (pct >= 100) setTimeout(() => wrap.classList.remove('visible'), 1500);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function clearAll() {
+  fetchedTracks = [];
+  document.getElementById('trackList').classList.remove('visible');
+  document.getElementById('logBox').classList.remove('visible');
+  document.getElementById('logBox').innerHTML = '';
+  document.getElementById('successBanner').classList.remove('visible');
+  document.getElementById('progressWrap').classList.remove('visible');
+  document.getElementById('btnTransfer').disabled = true;
+}
+</script>
+</body>
+</html>
