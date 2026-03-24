@@ -360,13 +360,14 @@
     <div class="row">
       <div class="field">
         <label>Zeitraum</label>
-        <select id="period">
+        <select id="period" onchange="onPeriodChange()">
           <option value="7day">Letzte 7 Tage</option>
           <option value="1month">Letzter Monat</option>
           <option value="3month">Letzte 3 Monate</option>
           <option value="6month">Letzte 6 Monate</option>
           <option value="12month" selected>Letztes Jahr</option>
           <option value="overall">Alle Zeit</option>
+          <option value="custom">Eigener Zeitraum…</option>
         </select>
       </div>
       <div class="field">
@@ -374,12 +375,30 @@
         <input type="text" id="plName" value="Last.fm Top Tracks"/>
       </div>
     </div>
+
+    <!-- Custom date range (hidden by default) -->
+    <div class="row" id="customDateRow" style="display:none">
+      <div class="field">
+        <label>Von</label>
+        <input type="date" id="dateFrom"/>
+      </div>
+      <div class="field">
+        <label>Bis</label>
+        <input type="date" id="dateTo"/>
+      </div>
+    </div>
+    <div id="customDateNote" style="display:none; font-size:10px; color:var(--muted); margin-top:-8px; margin-bottom:12px; line-height:1.6">
+      Eigener Zeitraum lädt alle Scrobbles im Bereich und zählt lokal — kann bei vielen Plays etwas länger dauern.
+    </div>
+
     <div class="field">
-      <label>Anzahl Songs: <span id="topNLabel">25</span></label>
+      <label>Anzahl Songs</label>
       <div class="slider-wrap">
-        <input type="range" id="topN" min="5" max="100" value="25" step="5"
-          oninput="document.getElementById('topNLabel').textContent=this.value; document.getElementById('sliderVal').textContent=this.value"/>
-        <div class="slider-val" id="sliderVal">25</div>
+        <input type="range" id="topN" min="5" max="1000" value="25" step="5"
+          oninput="syncTopN(this.value)"/>
+        <input type="number" id="topNInput" min="1" max="1000" value="25"
+          style="width:72px; flex-shrink:0; text-align:center; padding:6px 8px"
+          oninput="syncTopN(this.value, true)"/>
       </div>
     </div>
     <div class="field">
@@ -626,11 +645,31 @@ function updateTransferBtn() {
 // ─────────────────────────────────────────────
 // Last.fm fetch
 // ─────────────────────────────────────────────
+
+function onPeriodChange() {
+  const isCustom = document.getElementById('period').value === 'custom';
+  document.getElementById('customDateRow').style.display  = isCustom ? '' : 'none';
+  document.getElementById('customDateNote').style.display = isCustom ? '' : 'none';
+  // Set sensible defaults for date inputs
+  if (isCustom && !document.getElementById('dateTo').value) {
+    const today = new Date();
+    const monthAgo = new Date(); monthAgo.setMonth(monthAgo.getMonth() - 1);
+    document.getElementById('dateTo').value   = today.toISOString().slice(0,10);
+    document.getElementById('dateFrom').value = monthAgo.toISOString().slice(0,10);
+  }
+}
+
+function syncTopN(val, fromInput = false) {
+  const n = Math.max(1, Math.min(1000, parseInt(val) || 1));
+  document.getElementById('topN').value      = n;
+  document.getElementById('topNInput').value = n;
+}
+
 async function fetchLastFm() {
   const apiKey = CONFIG.lfApiKey;
   const user   = document.getElementById('lfUser').value.trim();
   const period = document.getElementById('period').value;
-  const limit  = document.getElementById('topN').value;
+  const limit  = parseInt(document.getElementById('topNInput').value) || 25;
 
   if (!user) { alert('Bitte Last.fm Nutzernamen eingeben.'); return; }
 
@@ -639,22 +678,21 @@ async function fetchLastFm() {
   document.getElementById('trackList').classList.remove('visible');
   document.getElementById('successBanner').classList.remove('visible');
   fetchedTracks = [];
-  log(`Last.fm: Lade Top ${limit} Tracks für "${user}" (${period})…`, 'info');
 
   try {
-    const url = `https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${encodeURIComponent(user)}&period=${period}&limit=${limit}&api_key=${apiKey}&format=json`;
-    const res = await fetch(url);
-    const data = await res.json();
+    let tracks;
+    if (period === 'custom') {
+      tracks = await fetchCustomRange(user, apiKey, limit);
+    } else {
+      tracks = await fetchTopTracks(user, apiKey, period, limit);
+    }
 
-    if (data.error) throw new Error(data.message);
-    const tracks = data.toptracks?.track || [];
     if (!tracks.length) throw new Error('Keine Tracks gefunden.');
-
     log(`Last.fm: ${tracks.length} Tracks geladen.`, 'ok');
 
     fetchedTracks = tracks.map(t => ({
       name: t.name,
-      artist: t.artist.name,
+      artist: t.artist,
       playcount: t.playcount,
       spotifyUri: null,
       found: null
@@ -670,221 +708,39 @@ async function fetchLastFm() {
   }
 }
 
-function renderTrackList(withSpotify) {
-  const container = document.getElementById('trackItems');
-  container.innerHTML = '';
-  document.getElementById('trackListTitle').textContent =
-    withSpotify ? `Tracks (${fetchedTracks.filter(t=>t.found).length}/${fetchedTracks.length} auf Spotify gefunden)` : `${fetchedTracks.length} Tracks von Last.fm`;
-
-  fetchedTracks.forEach((t, i) => {
-    const div = document.createElement('div');
-    div.className = 'track-item';
-    let statusHtml = '';
-    if (withSpotify) {
-      statusHtml = t.found
-        ? `<span class="track-found">✓ gefunden</span>`
-        : `<span class="track-notfound">✗ nicht gefunden</span>`;
-    } else {
-      statusHtml = `<span style="color:var(--muted);font-size:11px">${parseInt(t.playcount).toLocaleString('de')} plays</span>`;
-    }
-    div.innerHTML = `
-      <span class="track-num">${i+1}</span>
-      <div>
-        <div class="track-name">${escHtml(t.name)}</div>
-        <div class="track-artist">${escHtml(t.artist)}</div>
-      </div>
-      ${statusHtml}
-    `;
-    container.appendChild(div);
-  });
-
-  document.getElementById('trackList').classList.add('visible');
-}
-
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-// ─────────────────────────────────────────────
-// Spotify Transfer
-// ─────────────────────────────────────────────
-async function transferToSpotify() {
-  if (!spToken || !fetchedTracks.length) return;
-
-  setSpinner('spinTransfer', true);
-  document.getElementById('btnTransfer').disabled = true;
-  document.getElementById('successBanner').classList.remove('visible');
-  setProgress(0);
-
-  log('Spotify: Suche Tracks…', 'info');
-
-  // 1. Search each track
-  const total = fetchedTracks.length;
-  for (let i = 0; i < total; i++) {
-    const t = fetchedTracks[i];
-    const q = encodeURIComponent(`track:${t.name} artist:${t.artist}`);
-    try {
-      const res = await fetch(`https://api.spotify.com/v1/search?q=${q}&type=track&limit=1`, {
-        headers: { Authorization: 'Bearer ' + spToken }
-      });
-      const data = await res.json();
-      const item = data.tracks?.items?.[0];
-      if (item) {
-        t.spotifyUri = item.uri;
-        t.found = true;
-      } else {
-        t.found = false;
-        log(`Nicht gefunden: ${t.artist} – ${t.name}`, 'muted');
-      }
-    } catch(e) {
-      t.found = false;
-    }
-    setProgress(Math.round(((i+1) / total) * 60));
-    await sleep(100); // rate limit protection
-  }
-
-  renderTrackList(true);
-  const uris = fetchedTracks.filter(t => t.found).map(t => t.spotifyUri);
-  log(`Spotify: ${uris.length}/${total} Tracks gefunden.`, 'ok');
-
-  if (!uris.length) {
-    log('Keine Tracks gefunden – Playlist nicht erstellt.', 'err');
-    setSpinner('spinTransfer', false);
-    document.getElementById('btnTransfer').disabled = false;
-    return;
-  }
-
-  // 2. Create / find playlist
-  setProgress(65);
-  const plName = document.getElementById('plName').value.trim() || 'Last.fm Top Tracks';
-  const mode   = document.getElementById('plMode').value;
-  let plId = null;
-
-  if (mode === 'replace' || mode === 'append') {
-    log('Spotify: Suche bestehende Playlist…', 'info');
-    plId = await findPlaylist(plName);
-    if (!plId) {
-      log('Playlist nicht gefunden – erstelle neue.', 'muted');
-      plId = await createPlaylist(plName);
-    } else {
-      if (mode === 'replace') {
-        log('Spotify: Leere bestehende Playlist…', 'info');
-        await clearPlaylist(plId);
-      }
-    }
-  } else {
-    log('Spotify: Erstelle neue Playlist…', 'info');
-    plId = await createPlaylist(plName);
-  }
-
-  if (!plId) {
-    log('Fehler: Playlist konnte nicht erstellt werden.', 'err');
-    setSpinner('spinTransfer', false);
-    document.getElementById('btnTransfer').disabled = false;
-    return;
-  }
-
-  setProgress(75);
-
-  // 3. Add tracks in chunks of 100
-  const chunks = [];
-  for (let i = 0; i < uris.length; i += 100) chunks.push(uris.slice(i, i+100));
-  for (let ci = 0; ci < chunks.length; ci++) {
-    await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + spToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ uris: chunks[ci] })
-    });
-    setProgress(75 + Math.round(((ci+1)/chunks.length)*25));
-    await sleep(200);
-  }
-
-  setProgress(100);
-  log(`✓ Playlist "${plName}" mit ${uris.length} Tracks erstellt!`, 'ok');
-
-  const plUrl = `https://open.spotify.com/playlist/${plId}`;
-  document.getElementById('plLink').href = plUrl;
-  document.getElementById('successBanner').classList.add('visible');
-
-  setSpinner('spinTransfer', false);
-  document.getElementById('btnTransfer').disabled = false;
-}
-
-async function findPlaylist(name) {
-  try {
-    let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
-    while (url) {
-      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + spToken } });
-      const data = await res.json();
-      const found = data.items?.find(p => p.name === name && p.owner.id === spUserId);
-      if (found) return found.id;
-      url = data.next || null;
-    }
-  } catch(e) {}
-  return null;
-}
-
-async function createPlaylist(name) {
-  try {
-    const period = document.getElementById('period');
-    const periodText = period.options[period.selectedIndex].text;
-    const res = await fetch(`https://api.spotify.com/v1/users/${spUserId}/playlists`, {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + spToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name,
-        public: false,
-        description: `Top ${document.getElementById('topN').value} Tracks · ${periodText} · via Last.fm→Spot`
-      })
-    });
+// Standard top tracks (up to 1000 via pagination)
+async function fetchTopTracks(user, apiKey, period, limit) {
+  log(`Last.fm: Lade Top ${limit} Tracks für "${user}" (${period})…`, 'info');
+  let all = [];
+  const pageSize = 200;
+  let page = 1;
+  while (all.length < limit) {
+    const thisLimit = Math.min(pageSize, limit - all.length);
+    const url = `https://ws.audioscrobbler.com/2.0/?method=user.gettoptracks&user=${encodeURIComponent(user)}&period=${period}&limit=${thisLimit}&page=${page}&api_key=${apiKey}&format=json`;
+    const res  = await fetch(url);
     const data = await res.json();
-    return data.id || null;
-  } catch(e) { return null; }
+    if (data.error) throw new Error(data.message);
+    const items = data.toptracks?.track || [];
+    if (!items.length) break;
+    all = all.concat(items.map(t => ({ name: t.name, artist: t.artist.name, playcount: parseInt(t.playcount) })));
+    const total = parseInt(data.toptracks?.['@attr']?.total || 0);
+    if (all.length >= total) break;
+    page++;
+    await sleep(120);
+  }
+  return all.slice(0, limit);
 }
 
-async function clearPlaylist(plId) {
-  await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
-    method: 'PUT',
-    headers: {
-      Authorization: 'Bearer ' + spToken,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ uris: [] })
-  });
-}
+// Custom date range via user.getrecenttracks → count & rank locally
+async function fetchCustomRange(user, apiKey, limit) {
+  const fromDate = document.getElementById('dateFrom').value;
+  const toDate   = document.getElementById('dateTo').value;
+  if (!fromDate || !toDate) throw new Error('Bitte Von- und Bis-Datum wählen.');
 
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
-function setSpinner(id, on) {
-  document.getElementById(id).className = on ? 'spinner spinning' : 'spinner';
-}
+  const fromTs = Math.floor(new Date(fromDate).getTime() / 1000);
+  const toTs   = Math.floor(new Date(toDate + 'T23:59:59').getTime() / 1000);
+  if (fromTs >= toTs) throw new Error('Von-Datum muss vor Bis-Datum liegen.');
 
-function setProgress(pct) {
-  const wrap = document.getElementById('progressWrap');
-  const bar  = document.getElementById('progressBar');
-  wrap.classList.add('visible');
-  bar.style.width = pct + '%';
-  if (pct >= 100) setTimeout(() => wrap.classList.remove('visible'), 1500);
-}
+  log(`Last.fm: Lade Scrobbles ${fromDate} – ${toDate}…`, 'info');
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function clearAll() {
-  fetchedTracks = [];
-  document.getElementById('trackList').classList.remove('visible');
-  document.getElementById('logBox').classList.remove('visible');
-  document.getElementById('logBox').innerHTML = '';
-  document.getElementById('successBanner').classList.remove('visible');
-  document.getElementById('progressWrap').classList.remove('visible');
-  document.getElementById('btnTransfer').disabled = true;
-}
-</script>
-</body>
-</html>
+  const counts = {}; // "artist
