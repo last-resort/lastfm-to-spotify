@@ -332,48 +332,31 @@
     </div>
   </header>
 
-  <!-- SETUP -->
-  <div class="panel" data-label="01 · API Keys">
+  <!-- ACCOUNT -->
+  <div class="panel" data-label="01 · Account">
     <div class="row">
-      <div class="field">
-        <label>Last.fm API Key</label>
-        <input type="password" id="lfKey" placeholder="xxxxxxxxxxxxxxxx" autocomplete="off"/>
-      </div>
       <div class="field">
         <label>Last.fm Nutzername</label>
         <input type="text" id="lfUser" placeholder="dein_username"/>
       </div>
-    </div>
-    <div class="field" style="margin-top:4px">
-      <label>Spotify Client ID</label>
-      <input type="text" id="spClientId" placeholder="Spotify App Client ID"/>
-    </div>
-    <div class="field">
-      <label>Redirect URI (muss in Spotify App hinterlegt sein)</label>
-      <input type="text" id="spRedirect" placeholder="https://USERNAME.github.io/lastfm-to-spotify/"/>
-    </div>
-    <div style="font-size:10px; color:var(--muted); margin-top:8px; line-height:1.7">
-      Keys werden nur lokal im Browser gespeichert (localStorage). Kein Server involviert.
-    </div>
-  </div>
-
-  <!-- SPOTIFY AUTH -->
-  <div class="panel" data-label="02 · Spotify Verbindung">
-    <div class="auth-row">
-      <div>
-        <span class="status-dot" id="spDot" style="background:var(--muted)"></span>
-        <span class="status-text" id="spStatus">Nicht verbunden</span>
+      <div class="field" style="justify-content:flex-end; gap:8px">
+        <div class="auth-row">
+          <div>
+            <span class="status-dot" id="spDot" style="background:var(--muted)"></span>
+            <span class="status-text" id="spStatus">Spotify: nicht verbunden</span>
+          </div>
+          <button class="btn btn-spotify" id="btnAuth" onclick="spotifyAuth()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+            Spotify verbinden
+          </button>
+        </div>
+        <div id="spUserInfo" style="font-size:11px; color:var(--muted); display:none"></div>
       </div>
-      <button class="btn btn-spotify" id="btnAuth" onclick="spotifyAuth()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-        Spotify verbinden
-      </button>
     </div>
-    <div id="spUserInfo" style="margin-top:12px; font-size:11px; color:var(--muted); display:none"></div>
   </div>
 
   <!-- QUERY SETTINGS -->
-  <div class="panel" data-label="03 · Einstellungen">
+  <div class="panel" data-label="02 · Einstellungen">
     <div class="row">
       <div class="field">
         <label>Zeitraum</label>
@@ -456,16 +439,28 @@ let spUserId = null;
 let fetchedTracks = []; // [{name, artist, playcount, spotifyUri, found}]
 
 // ─────────────────────────────────────────────
-// Persist settings
+// Hardcoded config
 // ─────────────────────────────────────────────
-const FIELDS = ['lfKey','lfUser','spClientId','spRedirect','plName'];
+const CONFIG = {
+  lfApiKey:       '714af6732f52c8f5f859dae45020bd3d',
+  spClientId:     '06e275b426314005a98cda7bd7a71d88',
+  spRedirectUri:  'https://last-resort.github.io/lastfm-to-spotify/',
+};
+
 window.addEventListener('load', () => {
-  FIELDS.forEach(id => {
-    const el = document.getElementById(id);
-    const val = localStorage.getItem('lfs_' + id);
-    if (val) el.value = val;
-    el.addEventListener('input', () => localStorage.setItem('lfs_' + id, el.value));
+  // Restore last.fm username from localStorage
+  const savedUser = localStorage.getItem('lfs_lfUser');
+  if (savedUser) document.getElementById('lfUser').value = savedUser;
+  document.getElementById('lfUser').addEventListener('input', e => {
+    localStorage.setItem('lfs_lfUser', e.target.value);
+    updateFetchBtn();
   });
+
+  // Restore playlist name
+  const savedPlName = localStorage.getItem('lfs_plName');
+  if (savedPlName) document.getElementById('plName').value = savedPlName;
+  document.getElementById('plName').addEventListener('input', e =>
+    localStorage.setItem('lfs_plName', e.target.value));
 
   // Check Spotify PKCE callback: returns ?code= in query string
   const urlParams = new URLSearchParams(window.location.search);
@@ -494,13 +489,10 @@ window.addEventListener('load', () => {
   }
 
   updateFetchBtn();
-  document.getElementById('lfKey').addEventListener('input', updateFetchBtn);
-  document.getElementById('lfUser').addEventListener('input', updateFetchBtn);
 });
 
 function updateFetchBtn() {
-  const ok = document.getElementById('lfKey').value.trim() &&
-             document.getElementById('lfUser').value.trim();
+  const ok = document.getElementById('lfUser').value.trim();
   document.getElementById('btnFetch').disabled = !ok;
 }
 
@@ -534,23 +526,14 @@ async function generatePKCE() {
 }
 
 async function spotifyAuth() {
-  const clientId = document.getElementById('spClientId').value.trim();
-  const redirect = document.getElementById('spRedirect').value.trim();
-  if (!clientId || !redirect) {
-    alert('Bitte Spotify Client ID und Redirect URI eingeben.');
-    return;
-  }
-  localStorage.setItem('lfs_spClientId', clientId);
-  localStorage.setItem('lfs_spRedirect', redirect);
-
   const { verifier, challenge } = await generatePKCE();
   localStorage.setItem('lfs_pkce_verifier', verifier);
 
   const scopes = 'playlist-modify-public playlist-modify-private playlist-read-private';
   const params = new URLSearchParams({
-    client_id: clientId,
+    client_id: CONFIG.spClientId,
     response_type: 'code',
-    redirect_uri: redirect,
+    redirect_uri: CONFIG.spRedirectUri,
     scope: scopes,
     code_challenge_method: 'S256',
     code_challenge: challenge,
@@ -559,10 +542,6 @@ async function spotifyAuth() {
 }
 
 async function exchangeCodeForToken(code) {
-  const clientId = document.getElementById('spClientId').value.trim()
-                || localStorage.getItem('lfs_spClientId');
-  const redirect = document.getElementById('spRedirect').value.trim()
-                || localStorage.getItem('lfs_spRedirect');
   const verifier = localStorage.getItem('lfs_pkce_verifier');
 
   const res = await fetch('https://accounts.spotify.com/api/token', {
@@ -571,8 +550,8 @@ async function exchangeCodeForToken(code) {
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code,
-      redirect_uri: redirect,
-      client_id: clientId,
+      redirect_uri: CONFIG.spRedirectUri,
+      client_id: CONFIG.spClientId,
       code_verifier: verifier,
     }),
   });
@@ -594,8 +573,7 @@ async function exchangeCodeForToken(code) {
 
 async function refreshAccessToken() {
   const refreshToken = localStorage.getItem('lfs_spRefresh');
-  const clientId = localStorage.getItem('lfs_spClientId');
-  if (!refreshToken || !clientId) return false;
+  if (!refreshToken) return false;
 
   const res = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -603,7 +581,7 @@ async function refreshAccessToken() {
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
-      client_id: clientId,
+      client_id: CONFIG.spClientId,
     }),
   });
 
@@ -649,12 +627,12 @@ function updateTransferBtn() {
 // Last.fm fetch
 // ─────────────────────────────────────────────
 async function fetchLastFm() {
-  const apiKey = document.getElementById('lfKey').value.trim();
+  const apiKey = CONFIG.lfApiKey;
   const user   = document.getElementById('lfUser').value.trim();
   const period = document.getElementById('period').value;
   const limit  = document.getElementById('topN').value;
 
-  if (!apiKey || !user) { alert('Last.fm API Key und Nutzername benötigt.'); return; }
+  if (!user) { alert('Bitte Last.fm Nutzernamen eingeben.'); return; }
 
   setSpinner('spinFetch', true);
   document.getElementById('btnFetch').disabled = true;
