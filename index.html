@@ -467,20 +467,20 @@ window.addEventListener('load', () => {
     el.addEventListener('input', () => localStorage.setItem('lfs_' + id, el.value));
   });
 
-  // Check Spotify token from URL hash (after OAuth redirect)
-  const hash = window.location.hash.substring(1);
-  if (hash) {
-    const params = new URLSearchParams(hash);
-    const token = params.get('access_token');
-    const expiresIn = params.get('expires_in');
-    if (token) {
-      spToken = token;
-      spTokenExpiry = Date.now() + (parseInt(expiresIn) * 1000);
-      localStorage.setItem('lfs_spToken', token);
-      localStorage.setItem('lfs_spTokenExpiry', spTokenExpiry);
-      history.replaceState(null, null, window.location.pathname);
-      fetchSpotifyUser();
-    }
+  // Check Spotify PKCE callback: returns ?code= in query string
+  const urlParams = new URLSearchParams(window.location.search);
+  const code = urlParams.get('code');
+  const authError = urlParams.get('error');
+
+  if (authError) {
+    log('Spotify Auth abgebrochen: ' + authError, 'err');
+    history.replaceState(null, null, window.location.pathname);
+  } else if (code) {
+    history.replaceState(null, null, window.location.pathname);
+    log('Spotify: Tausche Auth-Code gegen Token…', 'info');
+    exchangeCodeForToken(code)
+      .then(() => fetchSpotifyUser())
+      .catch(e => log('Token-Austausch fehlgeschlagen: ' + e.message, 'err'));
   } else {
     const savedToken = localStorage.getItem('lfs_spToken');
     const savedExpiry = localStorage.getItem('lfs_spTokenExpiry');
@@ -488,6 +488,8 @@ window.addEventListener('load', () => {
       spToken = savedToken;
       spTokenExpiry = parseInt(savedExpiry);
       fetchSpotifyUser();
+    } else if (localStorage.getItem('lfs_spRefresh')) {
+      refreshAccessToken().then(ok => { if (ok) fetchSpotifyUser(); });
     }
   }
 
@@ -517,9 +519,21 @@ function log(msg, type = 'info') {
 }
 
 // ─────────────────────────────────────────────
-// Spotify OAuth (PKCE-less Implicit Flow – simple for GitHub Pages)
+// Spotify OAuth – PKCE Flow
 // ─────────────────────────────────────────────
-function spotifyAuth() {
+function base64urlEncode(buffer) {
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function generatePKCE() {
+  const verifier = base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const hashed = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge = base64urlEncode(hashed);
+  return { verifier, challenge };
+}
+
+async function spotifyAuth() {
   const clientId = document.getElementById('spClientId').value.trim();
   const redirect = document.getElementById('spRedirect').value.trim();
   if (!clientId || !redirect) {
@@ -529,9 +543,78 @@ function spotifyAuth() {
   localStorage.setItem('lfs_spClientId', clientId);
   localStorage.setItem('lfs_spRedirect', redirect);
 
+  const { verifier, challenge } = await generatePKCE();
+  localStorage.setItem('lfs_pkce_verifier', verifier);
+
   const scopes = 'playlist-modify-public playlist-modify-private playlist-read-private';
-  const url = `https://accounts.spotify.com/authorize?client_id=${clientId}&response_type=token&redirect_uri=${encodeURIComponent(redirect)}&scope=${encodeURIComponent(scopes)}`;
-  window.location.href = url;
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: redirect,
+    scope: scopes,
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+  });
+  window.location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
+}
+
+async function exchangeCodeForToken(code) {
+  const clientId = document.getElementById('spClientId').value.trim()
+                || localStorage.getItem('lfs_spClientId');
+  const redirect = document.getElementById('spRedirect').value.trim()
+                || localStorage.getItem('lfs_spRedirect');
+  const verifier = localStorage.getItem('lfs_pkce_verifier');
+
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: redirect,
+      client_id: clientId,
+      code_verifier: verifier,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error_description || 'Token-Austausch fehlgeschlagen');
+  }
+
+  const data = await res.json();
+  spToken = data.access_token;
+  spTokenExpiry = Date.now() + data.expires_in * 1000;
+
+  localStorage.setItem('lfs_spToken', spToken);
+  localStorage.setItem('lfs_spTokenExpiry', spTokenExpiry);
+  if (data.refresh_token) localStorage.setItem('lfs_spRefresh', data.refresh_token);
+  localStorage.removeItem('lfs_pkce_verifier');
+}
+
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem('lfs_spRefresh');
+  const clientId = localStorage.getItem('lfs_spClientId');
+  if (!refreshToken || !clientId) return false;
+
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+    }),
+  });
+
+  if (!res.ok) return false;
+  const data = await res.json();
+  spToken = data.access_token;
+  spTokenExpiry = Date.now() + data.expires_in * 1000;
+  localStorage.setItem('lfs_spToken', spToken);
+  localStorage.setItem('lfs_spTokenExpiry', spTokenExpiry);
+  if (data.refresh_token) localStorage.setItem('lfs_spRefresh', data.refresh_token);
+  return true;
 }
 
 async function fetchSpotifyUser() {
@@ -548,7 +631,7 @@ async function fetchSpotifyUser() {
     const info = document.getElementById('spUserInfo');
     info.style.display = 'block';
     info.textContent = `Eingeloggt als: ${data.display_name || data.id} · ${data.product === 'premium' ? 'Premium' : 'Free'}`;
-    document.getElementById('btnAuth').textContent = '✓ Neu verbinden';
+    document.getElementById('btnAuth').innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg> Neu verbinden`;
     updateTransferBtn();
     log(`Spotify: Eingeloggt als ${data.display_name || data.id}`, 'ok');
   } catch(e) {
