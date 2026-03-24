@@ -743,4 +743,254 @@ async function fetchCustomRange(user, apiKey, limit) {
 
   log(`Last.fm: Lade Scrobbles ${fromDate} – ${toDate}…`, 'info');
 
-  const counts = {}; // "artist
+  const counts = {}; // "artist||track" → {name, artist, playcount}
+  const pageSize = 200;
+  let page = 1;
+  let totalPages = 1;
+  let totalFetched = 0;
+
+  while (page <= totalPages) {
+    const url = `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${encodeURIComponent(user)}&from=${fromTs}&to=${toTs}&limit=${pageSize}&page=${page}&api_key=${apiKey}&format=json`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.message);
+
+    const attr = data.recenttracks?.['@attr'];
+    totalPages  = parseInt(attr?.totalPages || 1);
+    const items = data.recenttracks?.track || [];
+
+    for (const t of items) {
+      if (t['@attr']?.nowplaying) continue; // skip now-playing pseudo-entry
+      const key = (t.artist['#text'] + '||' + t.name).toLowerCase();
+      if (!counts[key]) counts[key] = { name: t.name, artist: t.artist['#text'], playcount: 0 };
+      counts[key].playcount++;
+    }
+
+    totalFetched += items.length;
+    if (totalPages > 1) log(`Last.fm: Seite ${page}/${totalPages} (${totalFetched} Scrobbles)…`, 'muted');
+    page++;
+    await sleep(150);
+  }
+
+  const sorted = Object.values(counts).sort((a, b) => b.playcount - a.playcount);
+  return sorted.slice(0, limit);
+}
+
+function renderTrackList(withSpotify) {
+  const container = document.getElementById('trackItems');
+  container.innerHTML = '';
+  document.getElementById('trackListTitle').textContent =
+    withSpotify ? `Tracks (${fetchedTracks.filter(t=>t.found).length}/${fetchedTracks.length} auf Spotify gefunden)` : `${fetchedTracks.length} Tracks von Last.fm`;
+
+  fetchedTracks.forEach((t, i) => {
+    const div = document.createElement('div');
+    div.className = 'track-item';
+    let statusHtml = '';
+    if (withSpotify) {
+      statusHtml = t.found
+        ? `<span class="track-found">✓ gefunden</span>`
+        : `<span class="track-notfound">✗ nicht gefunden</span>`;
+    } else {
+      statusHtml = `<span style="color:var(--muted);font-size:11px">${parseInt(t.playcount).toLocaleString('de')} plays</span>`;
+    }
+    div.innerHTML = `
+      <span class="track-num">${i+1}</span>
+      <div>
+        <div class="track-name">${escHtml(t.name)}</div>
+        <div class="track-artist">${escHtml(t.artist)}</div>
+      </div>
+      ${statusHtml}
+    `;
+    container.appendChild(div);
+  });
+
+  document.getElementById('trackList').classList.add('visible');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────
+// Spotify Transfer
+// ─────────────────────────────────────────────
+async function transferToSpotify() {
+  if (!spToken || !fetchedTracks.length) return;
+
+  setSpinner('spinTransfer', true);
+  document.getElementById('btnTransfer').disabled = true;
+  document.getElementById('successBanner').classList.remove('visible');
+  setProgress(0);
+
+  log('Spotify: Suche Tracks…', 'info');
+
+  // 1. Search each track
+  const total = fetchedTracks.length;
+  for (let i = 0; i < total; i++) {
+    const t = fetchedTracks[i];
+    const q = encodeURIComponent(`track:${t.name} artist:${t.artist}`);
+    try {
+      const res = await fetch(`https://api.spotify.com/v1/search?q=${q}&type=track&limit=1`, {
+        headers: { Authorization: 'Bearer ' + spToken }
+      });
+      const data = await res.json();
+      const item = data.tracks?.items?.[0];
+      if (item) {
+        t.spotifyUri = item.uri;
+        t.found = true;
+      } else {
+        t.found = false;
+        log(`Nicht gefunden: ${t.artist} – ${t.name}`, 'muted');
+      }
+    } catch(e) {
+      t.found = false;
+    }
+    setProgress(Math.round(((i+1) / total) * 60));
+    await sleep(100); // rate limit protection
+  }
+
+  renderTrackList(true);
+  const uris = fetchedTracks.filter(t => t.found).map(t => t.spotifyUri);
+  log(`Spotify: ${uris.length}/${total} Tracks gefunden.`, 'ok');
+
+  if (!uris.length) {
+    log('Keine Tracks gefunden – Playlist nicht erstellt.', 'err');
+    setSpinner('spinTransfer', false);
+    document.getElementById('btnTransfer').disabled = false;
+    return;
+  }
+
+  // 2. Create / find playlist
+  setProgress(65);
+  const plName = document.getElementById('plName').value.trim() || 'Last.fm Top Tracks';
+  const mode   = document.getElementById('plMode').value;
+  let plId = null;
+
+  if (mode === 'replace' || mode === 'append') {
+    log('Spotify: Suche bestehende Playlist…', 'info');
+    plId = await findPlaylist(plName);
+    if (!plId) {
+      log('Playlist nicht gefunden – erstelle neue.', 'muted');
+      plId = await createPlaylist(plName);
+    } else {
+      if (mode === 'replace') {
+        log('Spotify: Leere bestehende Playlist…', 'info');
+        await clearPlaylist(plId);
+      }
+    }
+  } else {
+    log('Spotify: Erstelle neue Playlist…', 'info');
+    plId = await createPlaylist(plName);
+  }
+
+  if (!plId) {
+    log('Fehler: Playlist konnte nicht erstellt werden.', 'err');
+    setSpinner('spinTransfer', false);
+    document.getElementById('btnTransfer').disabled = false;
+    return;
+  }
+
+  setProgress(75);
+
+  // 3. Add tracks in chunks of 100
+  const chunks = [];
+  for (let i = 0; i < uris.length; i += 100) chunks.push(uris.slice(i, i+100));
+  for (let ci = 0; ci < chunks.length; ci++) {
+    await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + spToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ uris: chunks[ci] })
+    });
+    setProgress(75 + Math.round(((ci+1)/chunks.length)*25));
+    await sleep(200);
+  }
+
+  setProgress(100);
+  log(`✓ Playlist "${plName}" mit ${uris.length} Tracks erstellt!`, 'ok');
+
+  const plUrl = `https://open.spotify.com/playlist/${plId}`;
+  document.getElementById('plLink').href = plUrl;
+  document.getElementById('successBanner').classList.add('visible');
+
+  setSpinner('spinTransfer', false);
+  document.getElementById('btnTransfer').disabled = false;
+}
+
+async function findPlaylist(name) {
+  try {
+    let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+    while (url) {
+      const res = await fetch(url, { headers: { Authorization: 'Bearer ' + spToken } });
+      const data = await res.json();
+      const found = data.items?.find(p => p.name === name && p.owner.id === spUserId);
+      if (found) return found.id;
+      url = data.next || null;
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function createPlaylist(name) {
+  try {
+    const period = document.getElementById('period');
+    const periodText = period.options[period.selectedIndex].text;
+    const res = await fetch(`https://api.spotify.com/v1/users/${spUserId}/playlists`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + spToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name,
+        public: false,
+        description: `Top ${document.getElementById('topNInput').value} Tracks · ${periodText} · via Last.fm→Spot`
+      })
+    });
+    const data = await res.json();
+    return data.id || null;
+  } catch(e) { return null; }
+}
+
+async function clearPlaylist(plId) {
+  await fetch(`https://api.spotify.com/v1/playlists/${plId}/tracks`, {
+    method: 'PUT',
+    headers: {
+      Authorization: 'Bearer ' + spToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ uris: [] })
+  });
+}
+
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+function setSpinner(id, on) {
+  document.getElementById(id).className = on ? 'spinner spinning' : 'spinner';
+}
+
+function setProgress(pct) {
+  const wrap = document.getElementById('progressWrap');
+  const bar  = document.getElementById('progressBar');
+  wrap.classList.add('visible');
+  bar.style.width = pct + '%';
+  if (pct >= 100) setTimeout(() => wrap.classList.remove('visible'), 1500);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function clearAll() {
+  fetchedTracks = [];
+  document.getElementById('trackList').classList.remove('visible');
+  document.getElementById('logBox').classList.remove('visible');
+  document.getElementById('logBox').innerHTML = '';
+  document.getElementById('successBanner').classList.remove('visible');
+  document.getElementById('progressWrap').classList.remove('visible');
+  document.getElementById('btnTransfer').disabled = true;
+}
+</script>
+</body>
+</html>
