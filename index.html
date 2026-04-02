@@ -304,6 +304,55 @@
     .spinning { display: inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Checkbox toggle */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .toggle-row input[type=checkbox] {
+      appearance: none;
+      width: 32px;
+      height: 18px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      position: relative;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background .2s;
+      padding: 0;
+    }
+    .toggle-row input[type=checkbox]::after {
+      content: '';
+      position: absolute;
+      width: 12px; height: 12px;
+      background: var(--muted);
+      border-radius: 50%;
+      top: 2px; left: 2px;
+      transition: left .2s, background .2s;
+    }
+    .toggle-row input[type=checkbox]:checked {
+      background: rgba(240,224,64,.15);
+      border-color: var(--accent);
+    }
+    .toggle-row input[type=checkbox]:checked::after {
+      left: 16px;
+      background: var(--accent);
+    }
+    .toggle-label {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+    .toggle-label strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
     /* scrollbar */
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
@@ -410,6 +459,11 @@
         <option value="append">Zu bestehender Playlist hinzufügen</option>
       </select>
     </div>
+
+    <label class="toggle-row">
+      <input type="checkbox" id="chkAlbumSearch" checked/>
+      <span class="toggle-label"><strong>Album-Suche</strong> — zuerst Artist + Track + Album, dann nur Artist + Track als Fallback</span>
+    </label>
 
     <div class="action-bar">
       <button class="btn btn-lastfm" id="btnFetch" onclick="fetchLastFm()" disabled>
@@ -701,6 +755,17 @@ async function fetchLastFm() {
       matchType: null // 'album' | 'track' | null
     }));
 
+    // If album search is on and we used a preset period (not custom),
+    // enrich missing album fields via track.getInfo
+    const useAlbumSearch = document.getElementById('chkAlbumSearch').checked;
+    const tracksNeedingAlbum = fetchedTracks.filter(t => !t.album);
+    if (useAlbumSearch && period !== 'custom' && tracksNeedingAlbum.length) {
+      log(`Last.fm: Album-Info für ${tracksNeedingAlbum.length} Tracks nachschlagen…`, 'info');
+      await enrichAlbums(tracksNeedingAlbum, apiKey);
+      const enriched = fetchedTracks.filter(t => t.album).length;
+      log(`Last.fm: ${enriched}/${fetchedTracks.length} Tracks mit Album-Info.`, 'ok');
+    }
+
     renderTrackList(false);
     updateTransferBtn();
   } catch(e) {
@@ -779,6 +844,27 @@ async function fetchCustomRange(user, apiKey, limit) {
   return sorted.slice(0, limit);
 }
 
+// Enrich tracks with album info via track.getInfo (batched with concurrency limit)
+async function enrichAlbums(tracks, apiKey) {
+  const CONCURRENCY = 5;
+  let i = 0;
+  async function next() {
+    while (i < tracks.length) {
+      const t = tracks[i++];
+      try {
+        const url = `https://ws.audioscrobbler.com/2.0/?method=track.getInfo&artist=${encodeURIComponent(t.artist)}&track=${encodeURIComponent(t.name)}&api_key=${apiKey}&format=json`;
+        const res  = await fetch(url);
+        const data = await res.json();
+        const album = data.track?.album?.title;
+        if (album) t.album = album;
+      } catch(e) { /* skip silently */ }
+      await sleep(80);
+    }
+  }
+  // Run CONCURRENCY workers in parallel
+  await Promise.all(Array.from({ length: CONCURRENCY }, next));
+}
+
 function renderTrackList(withSpotify) {
   const container = document.getElementById('trackItems');
   container.innerHTML = '';
@@ -846,9 +932,10 @@ async function transferToSpotify() {
     const t = fetchedTracks[i];
 
     try {
-      // Pass 1: artist + track + album
+      // Pass 1: artist + track + album (only if checkbox is on and album info available)
+      const useAlbumSearch = document.getElementById('chkAlbumSearch').checked;
       let item = null;
-      if (t.album) {
+      if (useAlbumSearch && t.album) {
         const q1 = encodeURIComponent(`track:${t.name} artist:${t.artist} album:${t.album}`);
         const r1 = await fetch(`https://api.spotify.com/v1/search?q=${q1}&type=track&limit=1`, {
           headers: { Authorization: 'Bearer ' + spToken }
