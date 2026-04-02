@@ -261,7 +261,8 @@
     .track-name { font-size: 13px; }
     .track-artist { color: var(--muted); font-size: 11px; margin-top: 2px; }
     .track-plays { color: var(--accent); font-size: 11px; white-space: nowrap; }
-    .track-found { color: var(--spotify); font-size: 10px; }
+    .track-found-album { color: var(--spotify); font-size: 10px; }
+    .track-found-track { color: #7ec8a0; font-size: 10px; }
     .track-notfound { color: var(--lastfm); font-size: 10px; }
 
     .section-title {
@@ -455,7 +456,7 @@
 let spToken = null;
 let spTokenExpiry = 0;
 let spUserId = null;
-let fetchedTracks = []; // [{name, artist, playcount, spotifyUri, found}]
+let fetchedTracks = []; // [{name, artist, album, playcount, spotifyUri, found, matchType}]
 
 // ─────────────────────────────────────────────
 // Hardcoded config
@@ -693,9 +694,11 @@ async function fetchLastFm() {
     fetchedTracks = tracks.map(t => ({
       name: t.name,
       artist: t.artist,
+      album: t.album || '',
       playcount: t.playcount,
       spotifyUri: null,
-      found: null
+      found: null,
+      matchType: null // 'album' | 'track' | null
     }));
 
     renderTrackList(false);
@@ -722,7 +725,7 @@ async function fetchTopTracks(user, apiKey, period, limit) {
     if (data.error) throw new Error(data.message);
     const items = data.toptracks?.track || [];
     if (!items.length) break;
-    all = all.concat(items.map(t => ({ name: t.name, artist: t.artist.name, playcount: parseInt(t.playcount) })));
+    all = all.concat(items.map(t => ({ name: t.name, artist: t.artist.name, album: t.album?.['#text'] || '', playcount: parseInt(t.playcount) })));
     const total = parseInt(data.toptracks?.['@attr']?.total || 0);
     if (all.length >= total) break;
     page++;
@@ -762,7 +765,7 @@ async function fetchCustomRange(user, apiKey, limit) {
     for (const t of items) {
       if (t['@attr']?.nowplaying) continue; // skip now-playing pseudo-entry
       const key = (t.artist['#text'] + '||' + t.name).toLowerCase();
-      if (!counts[key]) counts[key] = { name: t.name, artist: t.artist['#text'], playcount: 0 };
+      if (!counts[key]) counts[key] = { name: t.name, artist: t.artist['#text'], album: t.album?.['#text'] || '', playcount: 0 };
       counts[key].playcount++;
     }
 
@@ -780,16 +783,27 @@ function renderTrackList(withSpotify) {
   const container = document.getElementById('trackItems');
   container.innerHTML = '';
   document.getElementById('trackListTitle').textContent =
-    withSpotify ? `Tracks (${fetchedTracks.filter(t=>t.found).length}/${fetchedTracks.length} auf Spotify gefunden)` : `${fetchedTracks.length} Tracks von Last.fm`;
+    (() => {
+      if (!withSpotify) return `${fetchedTracks.length} Tracks von Last.fm`;
+      const total = fetchedTracks.length;
+      const album = fetchedTracks.filter(t => t.matchType === 'album').length;
+      const track = fetchedTracks.filter(t => t.matchType === 'track').length;
+      const none  = fetchedTracks.filter(t => !t.found).length;
+      return `Tracks — ${album} mit Album · ${track} nur Track · ${none} nicht gefunden`;
+    })()
 
   fetchedTracks.forEach((t, i) => {
     const div = document.createElement('div');
     div.className = 'track-item';
     let statusHtml = '';
     if (withSpotify) {
-      statusHtml = t.found
-        ? `<span class="track-found">✓ gefunden</span>`
-        : `<span class="track-notfound">✗ nicht gefunden</span>`;
+      if (t.found && t.matchType === 'album') {
+        statusHtml = `<span class="track-found-album" title="Gefunden mit Artist + Track + Album">✓ mit Album</span>`;
+      } else if (t.found && t.matchType === 'track') {
+        statusHtml = `<span class="track-found-track" title="Nur mit Artist + Track gefunden (kein Album-Match)">~ nur Track</span>`;
+      } else {
+        statusHtml = `<span class="track-notfound">✗ nicht gefunden</span>`;
+      }
     } else {
       statusHtml = `<span style="color:var(--muted);font-size:11px">${parseInt(t.playcount).toLocaleString('de')} plays</span>`;
     }
@@ -824,34 +838,61 @@ async function transferToSpotify() {
 
   log('Spotify: Suche Tracks…', 'info');
 
-  // 1. Search each track
+  // 1. Search each track – first with album, fallback to artist+track only
   const total = fetchedTracks.length;
+  let foundAlbum = 0, foundTrack = 0, notFound = 0;
+
   for (let i = 0; i < total; i++) {
     const t = fetchedTracks[i];
-    const q = encodeURIComponent(`track:${t.name} artist:${t.artist}`);
+
     try {
-      const res = await fetch(`https://api.spotify.com/v1/search?q=${q}&type=track&limit=1`, {
-        headers: { Authorization: 'Bearer ' + spToken }
-      });
-      const data = await res.json();
-      const item = data.tracks?.items?.[0];
+      // Pass 1: artist + track + album
+      let item = null;
+      if (t.album) {
+        const q1 = encodeURIComponent(`track:${t.name} artist:${t.artist} album:${t.album}`);
+        const r1 = await fetch(`https://api.spotify.com/v1/search?q=${q1}&type=track&limit=1`, {
+          headers: { Authorization: 'Bearer ' + spToken }
+        });
+        const d1 = await r1.json();
+        item = d1.tracks?.items?.[0] || null;
+        if (item) t.matchType = 'album';
+      }
+
+      // Pass 2: artist + track only (fallback)
+      if (!item) {
+        const q2 = encodeURIComponent(`track:${t.name} artist:${t.artist}`);
+        const r2 = await fetch(`https://api.spotify.com/v1/search?q=${q2}&type=track&limit=1`, {
+          headers: { Authorization: 'Bearer ' + spToken }
+        });
+        const d2 = await r2.json();
+        item = d2.tracks?.items?.[0] || null;
+        if (item) t.matchType = 'track';
+      }
+
       if (item) {
         t.spotifyUri = item.uri;
         t.found = true;
+        if (t.matchType === 'album') foundAlbum++;
+        else { foundTrack++; log(`Nur ohne Album gefunden: ${t.artist} – ${t.name}`, 'muted'); }
       } else {
         t.found = false;
+        t.matchType = null;
+        notFound++;
         log(`Nicht gefunden: ${t.artist} – ${t.name}`, 'muted');
       }
     } catch(e) {
       t.found = false;
+      t.matchType = null;
+      notFound++;
     }
+
     setProgress(Math.round(((i+1) / total) * 60));
-    await sleep(100); // rate limit protection
+    await sleep(120); // slightly more headroom for double requests
   }
 
   renderTrackList(true);
   const uris = fetchedTracks.filter(t => t.found).map(t => t.spotifyUri);
-  log(`Spotify: ${uris.length}/${total} Tracks gefunden.`, 'ok');
+  log(`Spotify: ${uris.length}/${total} gefunden — ${foundAlbum} mit Album, ${foundTrack} ohne Album, ${notFound} nicht gefunden.`, 'ok');
 
   if (!uris.length) {
     log('Keine Tracks gefunden – Playlist nicht erstellt.', 'err');
