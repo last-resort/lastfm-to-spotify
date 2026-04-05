@@ -811,24 +811,52 @@ async function fetchCustomRange(user, apiKey, limit) {
 
   log(`Last.fm: Lade Scrobbles ${fromDate} – ${toDate}…`, 'info');
 
-  const counts = {}; // "artist||track" → {name, artist, playcount}
+  const counts = {}; // "artist||track" → {name, artist, album, playcount}
   const pageSize = 200;
   let page = 1;
   let totalPages = 1;
   let totalFetched = 0;
+  const MAX_RETRIES = 5;
 
   while (page <= totalPages) {
-    const url = `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${encodeURIComponent(user)}&from=${fromTs}&to=${toTs}&limit=${pageSize}&page=${page}&api_key=${apiKey}&format=json`;
-    const res  = await fetch(url);
-    const data = await res.json();
-    if (data.error) throw new Error(data.message);
+    let data = null;
+    let retries = 0;
+    let delay = 800;
+
+    // Fetch with retry + exponential backoff
+    while (retries <= MAX_RETRIES) {
+      try {
+        const url = `https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&user=${encodeURIComponent(user)}&from=${fromTs}&to=${toTs}&limit=${pageSize}&page=${page}&api_key=${apiKey}&format=json`;
+        const res = await fetch(url);
+        data = await res.json();
+
+        // Last.fm sometimes returns error objects instead of HTTP error codes
+        if (data.error) {
+          if (retries < MAX_RETRIES) {
+            log(`Last.fm: Fehler auf Seite ${page} (${data.message}) – Retry ${retries + 1}/${MAX_RETRIES} in ${delay/1000}s…`, 'muted');
+            await sleep(delay);
+            delay = Math.min(delay * 2, 16000);
+            retries++;
+            continue;
+          }
+          throw new Error(data.message);
+        }
+        break; // success
+      } catch(e) {
+        if (retries >= MAX_RETRIES) throw e;
+        log(`Last.fm: Netzwerkfehler auf Seite ${page} – Retry ${retries + 1}/${MAX_RETRIES} in ${delay/1000}s…`, 'muted');
+        await sleep(delay);
+        delay = Math.min(delay * 2, 16000);
+        retries++;
+      }
+    }
 
     const attr = data.recenttracks?.['@attr'];
     totalPages  = parseInt(attr?.totalPages || 1);
     const items = data.recenttracks?.track || [];
 
     for (const t of items) {
-      if (t['@attr']?.nowplaying) continue; // skip now-playing pseudo-entry
+      if (t['@attr']?.nowplaying) continue;
       const key = (t.artist['#text'] + '||' + t.name).toLowerCase();
       if (!counts[key]) counts[key] = { name: t.name, artist: t.artist['#text'], album: t.album?.['#text'] || '', playcount: 0 };
       counts[key].playcount++;
@@ -837,9 +865,10 @@ async function fetchCustomRange(user, apiKey, limit) {
     totalFetched += items.length;
     if (totalPages > 1) log(`Last.fm: Seite ${page}/${totalPages} (${totalFetched} Scrobbles)…`, 'muted');
     page++;
-    await sleep(150);
+    await sleep(200);
   }
 
+  log(`Last.fm: ${totalFetched} Scrobbles geladen, ${Object.keys(counts).length} einzigartige Tracks.`, 'ok');
   const sorted = Object.values(counts).sort((a, b) => b.playcount - a.playcount);
   return sorted.slice(0, limit);
 }
